@@ -1,0 +1,25 @@
+# .NET
+bin/
+obj/
+*.user
+
+# Visual Studio
+.vs/
+*.suo
+
+# Generated test data (can reach several GB, must never be committed)
+App_Data/
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/

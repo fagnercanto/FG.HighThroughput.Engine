@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="claude_app_build_instructions.md.md" />
+    <File Path="claude_blazor_instructions.md" />
+    <File Path="claude_instructions.md" />
+  </Folder>
+  <Project Path="FG.HighThroughput.Engine.csproj" />
+</Solution>

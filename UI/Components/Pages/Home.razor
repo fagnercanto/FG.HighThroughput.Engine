@@ -1,0 +1,191 @@
+@page "/"
+@using FG.HighThroughput.Engine.Core
+@using FG.HighThroughput.Engine.Infrastructure
+@inject TestDataFileGenerator TestDataFileGenerator
+@inject IServiceProvider ServiceProvider
+@inject IWebHostEnvironment Environment
+@inject ILogger<Home> Logger
+@rendermode InteractiveServer
+
+<PageTitle>High Throughput Engine</PageTitle>
+
+<h1>FG.HighThroughput.Engine 🚀</h1>
+
+<p>
+    Gere uma massa de dados de teste (formato <code>Id|RawValue</code>) para alimentar o
+    stress test de ingestão. O arquivo é salvo em <code>App_Data/ingestion-sample.txt</code>.
+</p>
+
+<div class="mb-3">
+    <label for="recordCount" class="form-label">Quantidade de registros</label>
+    <input id="recordCount" class="form-control" style="max-width: 260px;"
+           type="number" min="1" max="20000000" @bind="RecordCount" disabled="@IsGenerating" />
+</div>
+
+<button class="btn btn-primary" @onclick="GenerateAsync" disabled="@IsGenerating">
+    @(IsGenerating ? "Gerando..." : "Gerar massa de teste")
+</button>
+
+@if (IsGenerating)
+{
+    <div class="mt-3">
+        <progress value="@GeneratedCount" max="@RecordCount" style="width: 100%;"></progress>
+        <p>@GeneratedCount.ToString("N0") / @RecordCount.ToString("N0") registros gerados</p>
+    </div>
+}
+
+@if (!IsGenerating && ElapsedTime is not null)
+{
+    <p class="text-success mt-3">
+        Arquivo gerado com sucesso em @ElapsedTime.Value.TotalSeconds.ToString("N1")s: <code>@FilePath</code>
+    </p>
+}
+
+@if (ErrorMessage is not null)
+{
+    <p class="text-danger mt-3">@ErrorMessage</p>
+}
+
+<hr class="my-4" />
+
+<h2>Disparar ingestão</h2>
+
+<p>
+    Executa o produtor (leitura do arquivo) e o consumidor (bulk insert) em paralelo,
+    usando o arquivo gerado acima.
+</p>
+
+<button class="btn btn-success" @onclick="IngestAsync" disabled="@(IsIngesting || !File.Exists(FilePath))">
+    @(IsIngesting ? "Ingerindo..." : "Iniciar ingestão")
+</button>
+
+@if (!File.Exists(FilePath) && !IsGenerating)
+{
+    <p class="text-muted mt-2">Gere o arquivo de teste acima antes de iniciar a ingestão.</p>
+}
+
+@if (IsIngesting)
+{
+    <div class="mt-3">
+        <p>Linhas lidas: @LinesRead.ToString("N0")</p>
+        <p>Registros inseridos: @RecordsInserted.ToString("N0")</p>
+    </div>
+}
+
+@if (!IsIngesting && IngestionElapsedTime is not null)
+{
+    <p class="text-success mt-3">
+        Ingestão concluída em @IngestionElapsedTime.Value.TotalSeconds.ToString("N1")s
+        (@RecordsInserted.ToString("N0") registros,
+        @((RecordsInserted / Math.Max(IngestionElapsedTime.Value.TotalSeconds, 0.001)).ToString("N0")) registros/s)
+    </p>
+}
+
+@if (IngestionErrorMessage is not null)
+{
+    <p class="text-danger mt-3">@IngestionErrorMessage</p>
+}
+
+@code {
+    private const string FileName = "ingestion-sample.txt";
+
+    private long RecordCount { get; set; } = 1_000_000;
+    private long GeneratedCount { get; set; }
+    private bool IsGenerating { get; set; }
+    private TimeSpan? ElapsedTime { get; set; }
+    private string? ErrorMessage { get; set; }
+    private string FilePath => Path.Combine(Environment.ContentRootPath, "App_Data", FileName);
+
+    private async Task GenerateAsync()
+    {
+        if (RecordCount <= 0)
+        {
+            ErrorMessage = "Informe uma quantidade de registros maior que zero.";
+            return;
+        }
+
+        IsGenerating = true;
+        GeneratedCount = 0;
+        ElapsedTime = null;
+        ErrorMessage = null;
+
+        var progress = new Progress<long>(count =>
+        {
+            GeneratedCount = count;
+            InvokeAsync(StateHasChanged);
+        });
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            await TestDataFileGenerator.GenerateAsync(FilePath, RecordCount, progress);
+            ElapsedTime = stopwatch.Elapsed;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to generate test data file with {RecordCount} records", RecordCount);
+            ErrorMessage = $"Falha ao gerar o arquivo: {ex.Message}";
+        }
+        finally
+        {
+            IsGenerating = false;
+        }
+    }
+
+    private bool IsIngesting { get; set; }
+    private long LinesRead { get; set; }
+    private long RecordsInserted { get; set; }
+    private TimeSpan? IngestionElapsedTime { get; set; }
+    private string? IngestionErrorMessage { get; set; }
+
+    private async Task IngestAsync()
+    {
+        if (!File.Exists(FilePath))
+        {
+            IngestionErrorMessage = "Arquivo de teste não encontrado. Gere a massa de dados primeiro.";
+            return;
+        }
+
+        IsIngesting = true;
+        LinesRead = 0;
+        RecordsInserted = 0;
+        IngestionElapsedTime = null;
+        IngestionErrorMessage = null;
+
+        // IngestionPipeline is registered as Transient: each run gets a fresh Channel.
+        var pipeline = ServiceProvider.GetRequiredService<IngestionPipeline>();
+
+        var readProgress = new Progress<long>(count =>
+        {
+            LinesRead = count;
+            InvokeAsync(StateHasChanged);
+        });
+
+        var insertProgress = new Progress<long>(count =>
+        {
+            RecordsInserted = count;
+            InvokeAsync(StateHasChanged);
+        });
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            await Task.WhenAll(
+                pipeline.ProduceFromFileAsync(FilePath, readProgress),
+                pipeline.ConsumeAsync(insertProgress));
+
+            IngestionElapsedTime = stopwatch.Elapsed;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Ingestion run failed for file {FilePath}", FilePath);
+            IngestionErrorMessage = $"Falha na ingestão: {ex.Message}";
+        }
+        finally
+        {
+            IsIngesting = false;
+        }
+    }
+}

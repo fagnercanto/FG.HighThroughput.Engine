@@ -1,0 +1,12 @@
+html, body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.page {
+    display: flex;
+    flex-direction: column;
+}
+
+.content {
+    padding-top: 1.5rem;
+}
