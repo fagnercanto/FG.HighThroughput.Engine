@@ -16,4 +16,11 @@ public interface IIngestionDataReader
     /// <param name="pageNumber">1-based page number.</param>
     /// <param name="pageSize">Number of rows per page.</param>
     Task<IReadOnlyList<IngestionRecord>> GetPageAsync(int pageNumber, int pageSize, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Empties the destination table via <c>TRUNCATE TABLE</c> (metadata/page deallocation,
+    /// not a row-by-row delete), so the user can reset the demo and start from a clean table
+    /// without restarting the application.
+    /// </summary>
+    Task TruncateAsync(CancellationToken cancellationToken);
 }

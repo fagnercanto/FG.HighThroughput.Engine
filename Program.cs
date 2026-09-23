@@ -33,4 +33,22 @@ app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
+// Lets the browser download the generated file to the user's own machine, regardless of
+// where the server actually runs (unlike Process.Start("explorer.exe"), which only makes
+// sense when server and client are the same machine, e.g. local LocalDB/F5 scenario).
+app.MapGet("/download/{fileName}", (string fileName, IWebHostEnvironment environment) =>
+{
+    var appDataDirectory = Path.Combine(environment.ContentRootPath, "App_Data");
+    var filePath = Path.GetFullPath(Path.Combine(appDataDirectory, fileName));
+
+    // Guard against path traversal (e.g. "../../Program.cs"): the resolved path must stay
+    // inside App_Data.
+    if (!filePath.StartsWith(appDataDirectory, StringComparison.OrdinalIgnoreCase) || !File.Exists(filePath))
+    {
+        return Results.NotFound();
+    }
+
+    return Results.File(filePath, "text/plain", Path.GetFileName(filePath), enableRangeProcessing: true);
+});
+
 app.Run();

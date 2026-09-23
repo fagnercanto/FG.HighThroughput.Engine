@@ -74,4 +74,14 @@ public sealed class SqlIngestionDataReader : IIngestionDataReader
 
         return records;
     }
+
+    public async Task TruncateAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"TRUNCATE TABLE {TargetTable};";
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
 }

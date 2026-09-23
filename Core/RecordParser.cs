@@ -94,60 +94,65 @@ public ref struct RecordParser
             throw new FormatException("SPED line does not contain a record code.");
         }
 
-        var rawValue = recordCode switch
+        // Dispatch by record code only to validate that the line has the expected column
+        // layout for its type (throws FormatException on malformed lines). The persisted
+        // RawValue is always the full original line - not a per-record summary - so the UI
+        // can display exactly what was read from the file (e.g. "I250|2|1.01.01.002|C|1500.00|HISTORICO PADRAO").
+        switch (recordCode)
         {
-            "0000" => ParseCabecalho0000(ref parser),
-            "I200" => ParseLancamentoI200(ref parser),
-            "I250" => ParsePartidaI250(ref parser),
-            "9999" => ParseTotalizador9999(ref parser),
-            _ => throw new FormatException($"Unknown SPED record code '{recordCode}'.")
-        };
+            case "0000":
+                ValidateCabecalho0000(ref parser);
+                break;
+            case "I200":
+                ValidateLancamentoI200(ref parser);
+                break;
+            case "I250":
+                ValidatePartidaI250(ref parser);
+                break;
+            case "9999":
+                ValidateTotalizador9999(ref parser);
+                break;
+            default:
+                throw new FormatException($"Unknown SPED record code '{recordCode}'.");
+        }
 
-        return new IngestionRecord(id, rawValue, DateTime.UtcNow);
+        return new IngestionRecord(id, line.ToString(), DateTime.UtcNow);
     }
 
     /// <summary>Record <c>0000</c>: file header. Layout: version|dateFrom|dateTo|companyName|cnpj|uf.</summary>
-    private static string ParseCabecalho0000(ref RecordParser parser)
+    private static void ValidateCabecalho0000(ref RecordParser parser)
     {
-        parser.TryReadNextField(out _);            // version
-        parser.TryReadNextField(out _);             // dateFrom
-        parser.TryReadNextField(out _);             // dateTo
-        parser.TryReadNextField(out var companyName);
-        parser.TryReadNextField(out _);             // cnpj
-        parser.TryReadNextField(out _);             // uf
-
-        return $"0000:{companyName}";
+        parser.TryReadNextField(out _); // version
+        parser.TryReadNextField(out _); // dateFrom
+        parser.TryReadNextField(out _); // dateTo
+        parser.TryReadNextField(out _); // companyName
+        parser.TryReadNextField(out _); // cnpj
+        parser.TryReadNextField(out _); // uf
     }
 
     /// <summary>Record <c>I200</c>: journal entry header. Layout: lineNumber|date|entryNumber|entity|flag.</summary>
-    private static string ParseLancamentoI200(ref RecordParser parser)
+    private static void ValidateLancamentoI200(ref RecordParser parser)
     {
-        parser.TryReadNextField(out _);             // lineNumber
-        parser.TryReadNextField(out var date);
-        parser.TryReadNextField(out var entryNumber);
-        parser.TryReadNextField(out _);             // entity
-        parser.TryReadNextField(out _);             // flag
-
-        return $"I200:{date}/{entryNumber}";
+        parser.TryReadNextField(out _); // lineNumber
+        parser.TryReadNextField(out _); // date
+        parser.TryReadNextField(out _); // entryNumber
+        parser.TryReadNextField(out _); // entity
+        parser.TryReadNextField(out _); // flag
     }
 
     /// <summary>Record <c>I250</c>: journal entry line (débito/crédito). Layout: lineNumber|account|debitCredit|value|complementaryHistory.</summary>
-    private static string ParsePartidaI250(ref RecordParser parser)
+    private static void ValidatePartidaI250(ref RecordParser parser)
     {
-        parser.TryReadNextField(out _);             // lineNumber
-        parser.TryReadNextField(out var account);
-        parser.TryReadNextField(out var debitCredit);
-        parser.TryReadNextField(out var value);
-        parser.TryReadNextField(out _);             // complementaryHistory
-
-        return $"I250:{account}:{debitCredit}:{value}";
+        parser.TryReadNextField(out _); // lineNumber
+        parser.TryReadNextField(out _); // account
+        parser.TryReadNextField(out _); // debitCredit
+        parser.TryReadNextField(out _); // value
+        parser.TryReadNextField(out _); // complementaryHistory
     }
 
     /// <summary>Record <c>9999</c>: file trailer. Layout: totalLines.</summary>
-    private static string ParseTotalizador9999(ref RecordParser parser)
+    private static void ValidateTotalizador9999(ref RecordParser parser)
     {
-        parser.TryReadNextField(out var totalLines);
-
-        return $"9999:{totalLines}";
+        parser.TryReadNextField(out _); // totalLines
     }
 }

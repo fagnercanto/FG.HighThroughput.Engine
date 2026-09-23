@@ -79,6 +79,12 @@
         {
             <p class="text-success mt-3">
                 Arquivo gerado com sucesso em @ElapsedTime.Value.TotalSeconds.ToString("N1")s: <code>@FilePath</code>
+                <a class="btn btn-outline-primary btn-sm ms-2" href="@DownloadUrl" title="Baixar arquivo para o seu computador">
+                    ⬇️ Baixar arquivo
+                </a>
+                <button class="btn btn-outline-secondary btn-sm ms-2" @onclick="OpenFileFolder" title="Abrir pasta do arquivo no servidor">
+                    📂 Abrir pasta (servidor)
+                </button>
             </p>
         }
 
@@ -159,12 +165,19 @@
             contadores em memória exibidos acima.
         </p>
 
-        <button class="btn btn-outline-secondary btn-sm" @onclick="() => LoadPageAsync(CurrentPage)" disabled="@IsLoadingPage">
+        <button class="btn btn-outline-secondary btn-sm" @onclick="() => LoadPageAsync(CurrentPage)" disabled="@(IsLoadingPage || IsClearingTable)">
             @if (IsLoadingPage)
             {
                 <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
             }
             @(IsLoadingPage ? "Atualizando..." : "Atualizar")
+        </button>
+        <button class="btn btn-outline-danger btn-sm ms-2" @onclick="ClearTableAsync" disabled="@(IsLoadingPage || IsClearingTable)">
+            @if (IsClearingTable)
+            {
+                <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+            }
+            @(IsClearingTable ? "Limpando..." : "Limpar tabela")
         </button>
 
         @if (TableErrorMessage is not null)
@@ -286,6 +299,13 @@
         SelectedFormat == RecordFormat.Simple ? SimpleFileName : SpedFileName);
 
     /// <summary>
+    /// URL of the "/download/{fileName}" minimal API endpoint (see Program.cs), used so the
+    /// browser downloads the generated file straight to the user's machine - unlike opening
+    /// the folder on the server, this works regardless of where the app is hosted.
+    /// </summary>
+    private string DownloadUrl => $"/download/{Uri.EscapeDataString(SelectedFormat == RecordFormat.Simple ? SimpleFileName : SpedFileName)}";
+
+    /// <summary>
     /// Formats an in-progress <see cref="System.Diagnostics.Stopwatch"/> as mm:ss.f. Using
     /// Stopwatch (monotonic, high-resolution) instead of DateTime.Now/system clock avoids
     /// any drift from clock adjustments and gives the user live feedback without needing to
@@ -334,6 +354,35 @@
             _generationUiTimer?.Dispose();
             _generationUiTimer = null;
             IsGenerating = false;
+        }
+    }
+
+    /// <summary>
+    /// Opens Windows Explorer with the generated file pre-selected. This is a Blazor Server
+    /// app: the server process runs on the same machine as the user (LocalDB scenario), so
+    /// launching a local process from here opens the folder on the user's own desktop.
+    /// </summary>
+    private void OpenFileFolder()
+    {
+        try
+        {
+            if (!File.Exists(FilePath))
+            {
+                ErrorMessage = "Arquivo não encontrado para abrir a pasta.";
+                return;
+            }
+
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{FilePath}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to open folder for file {FilePath}", FilePath);
+            ErrorMessage = $"Falha ao abrir a pasta: {ex.Message}";
         }
     }
 
@@ -409,6 +458,7 @@
     private long? TotalRecordCount { get; set; }
     private List<IngestionRecord> CurrentPageRecords { get; set; } = new();
     private bool IsLoadingPage { get; set; }
+    private bool IsClearingTable { get; set; }
     private string? TableErrorMessage { get; set; }
 
     private int TotalPages => TotalRecordCount is null or 0
@@ -444,6 +494,27 @@
         finally
         {
             IsLoadingPage = false;
+        }
+    }
+
+    private async Task ClearTableAsync()
+    {
+        IsClearingTable = true;
+        TableErrorMessage = null;
+
+        try
+        {
+            await IngestionDataReader.TruncateAsync(CancellationToken.None);
+            await LoadPageAsync(1);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to clear dbo.IngestionData");
+            TableErrorMessage = $"Falha ao limpar a tabela: {ex.Message}";
+        }
+        finally
+        {
+            IsClearingTable = false;
         }
     }
 
