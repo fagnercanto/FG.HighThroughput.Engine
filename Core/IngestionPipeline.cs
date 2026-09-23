@@ -43,7 +43,7 @@ public sealed class IngestionPipeline
     /// publishes the resulting record into the bounded channel. Awaits (suspends) when the
     /// channel is full, applying backpressure upstream to the file reader itself.
     /// </summary>
-    public async Task ProduceFromFileAsync(string filePath, IProgress<long>? progress = null, CancellationToken cancellationToken = default)
+    public async Task ProduceFromFileAsync(string filePath, RecordFormat format = RecordFormat.Simple, IProgress<long>? progress = null, CancellationToken cancellationToken = default)
     {
         var lineNumber = 0;
         var skippedLines = 0;
@@ -65,7 +65,9 @@ public sealed class IngestionPipeline
                 IngestionRecord record;
                 try
                 {
-                    record = RecordParser.ParseLine(line);
+                    record = format == RecordFormat.Simple
+                        ? RecordParser.ParseLine(line)
+                        : RecordParser.ParseSpedLine(lineNumber, line);
                 }
                 catch (FormatException ex)
                 {

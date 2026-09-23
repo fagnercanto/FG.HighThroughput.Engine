@@ -10,6 +10,9 @@ obj/
 # Generated test data (can reach several GB, must never be committed)
 App_Data/
 
+# LibMan-restored client-side libraries (e.g. Bootstrap); restored via `libman restore`
+wwwroot/lib/
+
 # Rider / VS Code
 .idea/
 .vscode/

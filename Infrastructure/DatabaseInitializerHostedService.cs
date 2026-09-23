@@ -59,7 +59,7 @@ public sealed class DatabaseInitializerHostedService : IHostedService
                     BEGIN
                         CREATE TABLE dbo.IngestionData
                         (
-                            Id BIGINT NOT NULL,
+                            Id BIGINT NOT NULL PRIMARY KEY CLUSTERED,
                             RawValue NVARCHAR(4000) NULL,
                             IngestedAtUtc DATETIME2 NOT NULL
                         );
@@ -67,6 +67,30 @@ public sealed class DatabaseInitializerHostedService : IHostedService
                     """;
 
                 await ExecuteNonQueryAsync(connection, createTableScript, cancellationToken);
+
+                // Every app start (F5) begins from a clean slate: TRUNCATE is a metadata/page
+                // deallocation operation (not a row-by-row DELETE), so it stays near-instant
+                // even after a run of 20M+ rows - it does not scan or log individual rows.
+                // Done BEFORE adding the primary key below so leftover duplicate Ids from a
+                // previous run (table created without a key) cannot block the ALTER TABLE.
+                _logger.LogInformation("Truncating dbo.IngestionData for a clean start...");
+                await ExecuteNonQueryAsync(connection, "TRUNCATE TABLE dbo.IngestionData;", cancellationToken);
+
+                // The table may already exist from a previous run of this POC without a
+                // clustered primary key (older schema). Add it if missing: without a
+                // clustered index on Id, OFFSET/FETCH paging and COUNT_BIG degrade badly
+                // once the table holds millions of rows (full heap scan every time).
+                const string ensurePrimaryKeyScript = """
+                    IF NOT EXISTS (
+                        SELECT 1 FROM sys.indexes
+                        WHERE object_id = OBJECT_ID(N'dbo.IngestionData') AND is_primary_key = 1
+                    )
+                    BEGIN
+                        ALTER TABLE dbo.IngestionData ADD CONSTRAINT PK_IngestionData PRIMARY KEY CLUSTERED (Id);
+                    END
+                    """;
+
+                await ExecuteNonQueryAsync(connection, ensurePrimaryKeyScript, cancellationToken);
             }
         }
         catch (SqlException ex)

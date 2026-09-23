@@ -10,6 +10,7 @@ builder.Services.AddRazorComponents()
 
 // Core/Infrastructure: ADO.NET only, no EF/Dapper.
 builder.Services.AddSingleton<IBulkDataWriter, SqlBulkCopyWriter>();
+builder.Services.AddSingleton<IIngestionDataReader, SqlIngestionDataReader>();
 // Transient: each ingestion run needs a fresh Channel (it is completed at the end of a run).
 builder.Services.AddTransient<IngestionPipeline>();
 builder.Services.AddSingleton<TestDataFileGenerator>();

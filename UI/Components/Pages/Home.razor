@@ -1,7 +1,9 @@
 @page "/"
 @using FG.HighThroughput.Engine.Core
 @using FG.HighThroughput.Engine.Infrastructure
+@implements IDisposable
 @inject TestDataFileGenerator TestDataFileGenerator
+@inject IIngestionDataReader IngestionDataReader
 @inject IServiceProvider ServiceProvider
 @inject IWebHostEnvironment Environment
 @inject ILogger<Home> Logger
@@ -9,92 +11,288 @@
 
 <PageTitle>High Throughput Engine</PageTitle>
 
-<h1>FG.HighThroughput.Engine 🚀</h1>
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>1. Gerar massa de teste</span>
+        @if (IsGenerating)
+        {
+            <span class="badge text-bg-warning">Gerando...</span>
+        }
+        else if (ElapsedTime is not null)
+        {
+            <span class="badge text-bg-success">Concluído</span>
+        }
+    </div>
+    <div class="card-body">
+        <p>
+            Gere uma massa de dados de teste para alimentar o stress test de ingestão. O arquivo é
+            salvo em <code>App_Data/ingestion-sample.txt</code> (formato simples) ou
+            <code>App_Data/ingestion-sample-sped.txt</code> (formato SPED completo).
+        </p>
+        <div class="mb-3">
+            <label class="form-label d-block">Formato</label>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" id="formatSimple" name="format"
+                       checked="@(SelectedFormat == RecordFormat.Simple)"
+                       disabled="@(IsGenerating || IsIngesting)"
+                       @onchange="@(() => SelectFormat(RecordFormat.Simple))" />
+                <label class="form-check-label" for="formatSimple">Simples (Id|RawValue)</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" id="formatSped" name="format"
+                       checked="@(SelectedFormat == RecordFormat.SpedCompleto)"
+                       disabled="@(IsGenerating || IsIngesting)"
+                       @onchange="@(() => SelectFormat(RecordFormat.SpedCompleto))" />
+                <label class="form-check-label" for="formatSped">SPED completo (0000/I200/I250/9999)</label>
+            </div>
+        </div>
 
-<p>
-    Gere uma massa de dados de teste (formato <code>Id|RawValue</code>) para alimentar o
-    stress test de ingestão. O arquivo é salvo em <code>App_Data/ingestion-sample.txt</code>.
-</p>
+        <div class="mb-3">
+            <label class="form-label d-block">Prévia do formato (primeiras @PreviewLines.Count linhas)</label>
+            <pre class="border rounded p-2 bg-light" style="max-height: 260px; overflow: auto; font-size: 0.85rem;"><code>@string.Join(System.Environment.NewLine, PreviewLines)</code></pre>
+        </div>
 
-<div class="mb-3">
-    <label for="recordCount" class="form-label">Quantidade de registros</label>
-    <input id="recordCount" class="form-control" style="max-width: 260px;"
-           type="number" min="1" max="20000000" @bind="RecordCount" disabled="@IsGenerating" />
+        <div class="mb-3">
+            <label for="recordCount" class="form-label">Quantidade de registros</label>
+            <input id="recordCount" class="form-control" style="max-width: 260px;"
+                   type="number" min="1" max="20000000" @bind="RecordCount" disabled="@IsGenerating" />
+        </div>
+
+        <button class="btn btn-primary" @onclick="GenerateAsync" disabled="@IsGenerating">
+            @if (IsGenerating)
+            {
+                <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+            }
+            @(IsGenerating ? "Gerando..." : "Gerar massa de teste")
+        </button>
+
+        @if (IsGenerating)
+        {
+            <div class="mt-3">
+                <progress value="@GeneratedCount" max="@RecordCount" style="width: 100%;"></progress>
+                <p>@GeneratedCount.ToString("N0") / @RecordCount.ToString("N0") registros gerados</p>
+                <p class="text-muted">Tempo decorrido: @FormatElapsed(GenerationStopwatch)</p>
+            </div>
+        }
+
+        @if (!IsGenerating && ElapsedTime is not null)
+        {
+            <p class="text-success mt-3">
+                Arquivo gerado com sucesso em @ElapsedTime.Value.TotalSeconds.ToString("N1")s: <code>@FilePath</code>
+            </p>
+        }
+
+        @if (ErrorMessage is not null)
+        {
+            <p class="text-danger mt-3">@ErrorMessage</p>
+        }
+    </div>
 </div>
 
-<button class="btn btn-primary" @onclick="GenerateAsync" disabled="@IsGenerating">
-    @(IsGenerating ? "Gerando..." : "Gerar massa de teste")
-</button>
-
-@if (IsGenerating)
-{
-    <div class="mt-3">
-        <progress value="@GeneratedCount" max="@RecordCount" style="width: 100%;"></progress>
-        <p>@GeneratedCount.ToString("N0") / @RecordCount.ToString("N0") registros gerados</p>
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>2. Disparar ingestão</span>
+        @if (IsIngesting)
+        {
+            <span class="badge text-bg-warning">Ingerindo...</span>
+        }
+        else if (IngestionElapsedTime is not null)
+        {
+            <span class="badge text-bg-success">Concluído</span>
+        }
     </div>
-}
+    <div class="card-body">
+        <p>
+            Executa o produtor (leitura do arquivo) e o consumidor (bulk insert) em paralelo,
+            usando o arquivo gerado acima.
+        </p>
 
-@if (!IsGenerating && ElapsedTime is not null)
-{
-    <p class="text-success mt-3">
-        Arquivo gerado com sucesso em @ElapsedTime.Value.TotalSeconds.ToString("N1")s: <code>@FilePath</code>
-    </p>
-}
+        <button class="btn btn-success" @onclick="IngestAsync" disabled="@(IsIngesting || !File.Exists(FilePath))">
+            @if (IsIngesting)
+            {
+                <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+            }
+            @(IsIngesting ? "Ingerindo..." : "Iniciar ingestão")
+        </button>
 
-@if (ErrorMessage is not null)
-{
-    <p class="text-danger mt-3">@ErrorMessage</p>
-}
+        @if (!File.Exists(FilePath) && !IsGenerating)
+        {
+            <p class="text-muted mt-2">Gere o arquivo de teste acima antes de iniciar a ingestão.</p>
+        }
 
-<hr class="my-4" />
+        @if (IsIngesting)
+        {
+            <div class="mt-3">
+                <p>Linhas lidas: @LinesRead.ToString("N0")</p>
+                <p>Registros inseridos: @RecordsInserted.ToString("N0")</p>
+                <p class="text-muted">Tempo decorrido: @FormatElapsed(IngestionStopwatch)</p>
+            </div>
+        }
 
-<h2>Disparar ingestão</h2>
+        @if (!IsIngesting && IngestionElapsedTime is not null)
+        {
+            <p class="text-success mt-3">
+                Ingestão concluída em @IngestionElapsedTime.Value.TotalSeconds.ToString("N1")s
+                (@RecordsInserted.ToString("N0") registros,
+                @((RecordsInserted / Math.Max(IngestionElapsedTime.Value.TotalSeconds, 0.001)).ToString("N0")) registros/s)
+            </p>
+        }
 
-<p>
-    Executa o produtor (leitura do arquivo) e o consumidor (bulk insert) em paralelo,
-    usando o arquivo gerado acima.
-</p>
-
-<button class="btn btn-success" @onclick="IngestAsync" disabled="@(IsIngesting || !File.Exists(FilePath))">
-    @(IsIngesting ? "Ingerindo..." : "Iniciar ingestão")
-</button>
-
-@if (!File.Exists(FilePath) && !IsGenerating)
-{
-    <p class="text-muted mt-2">Gere o arquivo de teste acima antes de iniciar a ingestão.</p>
-}
-
-@if (IsIngesting)
-{
-    <div class="mt-3">
-        <p>Linhas lidas: @LinesRead.ToString("N0")</p>
-        <p>Registros inseridos: @RecordsInserted.ToString("N0")</p>
+        @if (IngestionErrorMessage is not null)
+        {
+            <p class="text-danger mt-3">@IngestionErrorMessage</p>
+        }
     </div>
-}
+</div>
 
-@if (!IsIngesting && IngestionElapsedTime is not null)
-{
-    <p class="text-success mt-3">
-        Ingestão concluída em @IngestionElapsedTime.Value.TotalSeconds.ToString("N1")s
-        (@RecordsInserted.ToString("N0") registros,
-        @((RecordsInserted / Math.Max(IngestionElapsedTime.Value.TotalSeconds, 0.001)).ToString("N0")) registros/s)
-    </p>
-}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>3. Registros persistidos (dbo.IngestionData)</span>
+        @if (TotalRecordCount is not null)
+        {
+            <span class="badge text-bg-info">@TotalRecordCount.Value.ToString("N0") registros</span>
+        }
+    </div>
+    <div class="card-body">
+        <p>
+            Confirmação direta no banco de que os dados foram salvos, sem depender apenas dos
+            contadores em memória exibidos acima.
+        </p>
 
-@if (IngestionErrorMessage is not null)
-{
-    <p class="text-danger mt-3">@IngestionErrorMessage</p>
-}
+        <button class="btn btn-outline-secondary btn-sm" @onclick="() => LoadPageAsync(CurrentPage)" disabled="@IsLoadingPage">
+            @if (IsLoadingPage)
+            {
+                <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+            }
+            @(IsLoadingPage ? "Atualizando..." : "Atualizar")
+        </button>
+
+        @if (TableErrorMessage is not null)
+        {
+            <p class="text-danger mt-2">@TableErrorMessage</p>
+        }
+
+        @if (TotalRecordCount is not null)
+        {
+            <table class="table table-sm table-bordered mt-3">
+                <thead>
+                    <tr>
+                        <th>Id</th>
+                        <th>RawValue</th>
+                        <th>IngestedAtUtc</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var record in CurrentPageRecords)
+                    {
+                        <tr>
+                            <td>@record.Id</td>
+                            <td>@record.RawValue</td>
+                            <td>@record.IngestedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            <div class="d-flex align-items-center gap-2">
+                <button class="btn btn-outline-secondary btn-sm" @onclick="() => LoadPageAsync(CurrentPage - 1)" disabled="@(IsLoadingPage || CurrentPage <= 1)">Anterior</button>
+                <span>Página @CurrentPage de @TotalPages</span>
+                <button class="btn btn-outline-secondary btn-sm" @onclick="() => LoadPageAsync(CurrentPage + 1)" disabled="@(IsLoadingPage || CurrentPage >= TotalPages)">Próxima</button>
+            </div>
+        }
+    </div>
+</div>
 
 @code {
-    private const string FileName = "ingestion-sample.txt";
+    private const string SimpleFileName = "ingestion-sample.txt";
+    private const string SpedFileName = "ingestion-sample-sped.txt";
+    private const int PreviewLineCount = 10;
+
+    private RecordFormat SelectedFormat { get; set; } = RecordFormat.Simple;
+    private List<string> PreviewLines { get; set; } = new();
+
+    protected override void OnInitialized()
+    {
+        RefreshPreview();
+    }
+
+    private void SelectFormat(RecordFormat format)
+    {
+        SelectedFormat = format;
+        RefreshPreview();
+    }
+
+    /// <summary>
+    /// Builds a small in-memory sample (not the real generator) that mirrors exactly what
+    /// <see cref="TestDataFileGenerator"/> would write for the selected format, so the user
+    /// can see the layout before committing to generating millions of rows.
+    /// </summary>
+    private void RefreshPreview()
+    {
+        PreviewLines = SelectedFormat == RecordFormat.Simple
+            ? BuildSimplePreview()
+            : BuildSpedCompletoPreview();
+    }
+
+    private static List<string> BuildSimplePreview()
+    {
+        var lines = new List<string>(PreviewLineCount);
+        for (var id = 1; id <= PreviewLineCount; id++)
+        {
+            lines.Add($"{id}|sample-payload-{id}");
+        }
+
+        return lines;
+    }
+
+    private static List<string> BuildSpedCompletoPreview()
+    {
+        var lines = new List<string>(PreviewLineCount)
+        {
+            "0000|1|01012024|31122024|EMPRESA TESTE LTDA|12345678000199|SP"
+        };
+
+        long entryNumber = 0;
+        for (var detailLine = 1; lines.Count < PreviewLineCount - 1; detailLine++)
+        {
+            var isLancamentoHeader = (detailLine - 1) % 5 == 0;
+            if (isLancamentoHeader)
+            {
+                entryNumber++;
+                lines.Add($"I200|{detailLine}|20240115|LCTO{entryNumber}|1|N");
+            }
+            else
+            {
+                var debitCredit = detailLine % 2 == 0 ? 'C' : 'D';
+                lines.Add($"I250|{detailLine}|1.01.01.00{detailLine % 10}|{debitCredit}|1500.00|HISTORICO PADRAO");
+            }
+        }
+
+        lines.Add("9999|<totalLinhasDetalhe>");
+
+        return lines;
+    }
 
     private long RecordCount { get; set; } = 1_000_000;
     private long GeneratedCount { get; set; }
     private bool IsGenerating { get; set; }
     private TimeSpan? ElapsedTime { get; set; }
     private string? ErrorMessage { get; set; }
-    private string FilePath => Path.Combine(Environment.ContentRootPath, "App_Data", FileName);
+    private readonly System.Diagnostics.Stopwatch GenerationStopwatch = new();
+    private System.Threading.Timer? _generationUiTimer;
+    private string FilePath => Path.Combine(
+        Environment.ContentRootPath,
+        "App_Data",
+        SelectedFormat == RecordFormat.Simple ? SimpleFileName : SpedFileName);
+
+    /// <summary>
+    /// Formats an in-progress <see cref="System.Diagnostics.Stopwatch"/> as mm:ss.f. Using
+    /// Stopwatch (monotonic, high-resolution) instead of DateTime.Now/system clock avoids
+    /// any drift from clock adjustments and gives the user live feedback without needing to
+    /// watch a separate Windows clock.
+    /// </summary>
+    private static string FormatElapsed(System.Diagnostics.Stopwatch stopwatch)
+        => stopwatch.Elapsed.ToString(@"mm\:ss\.f");
 
     private async Task GenerateAsync()
     {
@@ -115,12 +313,15 @@
             InvokeAsync(StateHasChanged);
         });
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        GenerationStopwatch.Restart();
+        // Ticks the UI every 100ms so the elapsed-time counter updates live, independent of
+        // progress reports (which only fire every ProgressReportInterval rows).
+        _generationUiTimer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 100, 100);
 
         try
         {
-            await TestDataFileGenerator.GenerateAsync(FilePath, RecordCount, progress);
-            ElapsedTime = stopwatch.Elapsed;
+            await TestDataFileGenerator.GenerateAsync(FilePath, RecordCount, SelectedFormat, progress);
+            ElapsedTime = GenerationStopwatch.Elapsed;
         }
         catch (Exception ex)
         {
@@ -129,6 +330,9 @@
         }
         finally
         {
+            GenerationStopwatch.Stop();
+            _generationUiTimer?.Dispose();
+            _generationUiTimer = null;
             IsGenerating = false;
         }
     }
@@ -138,6 +342,8 @@
     private long RecordsInserted { get; set; }
     private TimeSpan? IngestionElapsedTime { get; set; }
     private string? IngestionErrorMessage { get; set; }
+    private readonly System.Diagnostics.Stopwatch IngestionStopwatch = new();
+    private System.Threading.Timer? _ingestionUiTimer;
 
     private async Task IngestAsync()
     {
@@ -168,15 +374,16 @@
             InvokeAsync(StateHasChanged);
         });
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        IngestionStopwatch.Restart();
+        _ingestionUiTimer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 100, 100);
 
         try
         {
             await Task.WhenAll(
-                pipeline.ProduceFromFileAsync(FilePath, readProgress),
+                pipeline.ProduceFromFileAsync(FilePath, SelectedFormat, readProgress),
                 pipeline.ConsumeAsync(insertProgress));
 
-            IngestionElapsedTime = stopwatch.Elapsed;
+            IngestionElapsedTime = IngestionStopwatch.Elapsed;
         }
         catch (Exception ex)
         {
@@ -185,7 +392,64 @@
         }
         finally
         {
+            IngestionStopwatch.Stop();
+            _ingestionUiTimer?.Dispose();
+            _ingestionUiTimer = null;
             IsIngesting = false;
         }
+
+        // Reload the paginated table so the user can immediately see, straight from the
+        // database, that the just-ingested rows are really there.
+        await LoadPageAsync(1);
+    }
+
+    private const int PageSize = 20;
+
+    private int CurrentPage { get; set; } = 1;
+    private long? TotalRecordCount { get; set; }
+    private List<IngestionRecord> CurrentPageRecords { get; set; } = new();
+    private bool IsLoadingPage { get; set; }
+    private string? TableErrorMessage { get; set; }
+
+    private int TotalPages => TotalRecordCount is null or 0
+        ? 1
+        : (int)Math.Ceiling(TotalRecordCount.Value / (double)PageSize);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPageAsync(1);
+    }
+
+    private async Task LoadPageAsync(int pageNumber)
+    {
+        if (pageNumber < 1)
+        {
+            return;
+        }
+
+        IsLoadingPage = true;
+        TableErrorMessage = null;
+
+        try
+        {
+            TotalRecordCount = await IngestionDataReader.GetTotalCountAsync(CancellationToken.None);
+            CurrentPage = Math.Min(pageNumber, TotalPages);
+            CurrentPageRecords = (await IngestionDataReader.GetPageAsync(CurrentPage, PageSize, CancellationToken.None)).ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load ingestion data page {PageNumber}", pageNumber);
+            TableErrorMessage = $"Falha ao consultar os registros: {ex.Message}";
+        }
+        finally
+        {
+            IsLoadingPage = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        _generationUiTimer?.Dispose();
+        _ingestionUiTimer?.Dispose();
     }
 }
