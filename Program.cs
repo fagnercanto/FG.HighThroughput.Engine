@@ -28,6 +28,14 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseAntiforgery();
+
+// MapStaticAssets() relies on the Static Web Assets manifest, which is only reliably
+// available when running via `dotnet run`/F5/IIS Express. Running the published/compiled
+// .exe directly (e.g. double-clicking it, or `bin/.../App.exe`) logs a warning and falls
+// back to serving raw files from wwwroot - UseStaticFiles() below guarantees that fallback
+// works correctly in every hosting scenario for this POC (no fingerprinting/compression
+// needed here: just app.css and the locally-restored Bootstrap files).
+app.UseStaticFiles();
 app.MapStaticAssets();
 
 app.MapRazorComponents<App>()
