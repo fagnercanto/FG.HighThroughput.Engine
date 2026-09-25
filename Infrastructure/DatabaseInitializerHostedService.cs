@@ -14,13 +14,15 @@ public sealed class DatabaseInitializerHostedService : IHostedService
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger<DatabaseInitializerHostedService> _logger;
+    private readonly IHostEnvironment _environment;
 
     private const string DatabaseName = "HighThroughputDB";
 
-    public DatabaseInitializerHostedService(IConfiguration configuration, ILogger<DatabaseInitializerHostedService> logger)
+    public DatabaseInitializerHostedService(IConfiguration configuration, ILogger<DatabaseInitializerHostedService> logger, IHostEnvironment environment)
     {
         _configuration = configuration;
         _logger = logger;
+        _environment = environment;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -31,7 +33,16 @@ public sealed class DatabaseInitializerHostedService : IHostedService
         var databaseConnectionString = _configuration.GetConnectionString("HighThroughputDb")
             ?? throw new InvalidOperationException("Connection string 'HighThroughputDb' not found.");
 
-        _logger.LogInformation("Ensuring LocalDB database '{Database}' exists...", DatabaseName);
+        // Data/log files are kept in a dedicated folder under App_Data (outside the user's
+        // profile / OS drive) so it can be excluded from real-time antivirus scanning without
+        // exposing an entire user or system folder - just this project's own database files.
+        var databaseFolder = Path.Combine(_environment.ContentRootPath, "App_Data", "Database");
+        Directory.CreateDirectory(databaseFolder);
+
+        var dataFilePath = Path.Combine(databaseFolder, $"{DatabaseName}.mdf");
+        var logFilePath = Path.Combine(databaseFolder, $"{DatabaseName}_log.ldf");
+
+        _logger.LogInformation("Ensuring LocalDB database '{Database}' exists at {Folder}...", DatabaseName, databaseFolder);
 
         try
         {
@@ -39,11 +50,34 @@ public sealed class DatabaseInitializerHostedService : IHostedService
             {
                 await connection.OpenAsync(cancellationToken);
 
+                // If the database is registered in the LocalDB instance but its .mdf/.ldf
+                // files were deleted/moved manually (e.g. the App_Data folder was removed),
+                // DB_ID(...) still returns a value even though the files no longer exist,
+                // and the plain CREATE DATABASE below would never run - leaving an orphaned
+                // entry that fails on every subsequent connection attempt. Detect that case
+                // here and drop the stale registration first so it can be recreated cleanly.
+                if (!File.Exists(dataFilePath))
+                {
+                    var dropOrphanedDatabaseScript = $"""
+                        IF DB_ID(N'{DatabaseName}') IS NOT NULL
+                        BEGIN
+                            ALTER DATABASE [{DatabaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                            DROP DATABASE [{DatabaseName}];
+                        END
+                        """;
+
+                    await ExecuteNonQueryAsync(connection, dropOrphanedDatabaseScript, cancellationToken);
+                }
+
                 // TODO: extract to embedded .sql resource once the real schema is defined.
-                const string createDatabaseScript = $"""
+                // Explicit file paths keep the .mdf/.ldf inside App_Data instead of LocalDB's
+                // default location under the user's profile.
+                var createDatabaseScript = $"""
                     IF DB_ID(N'{DatabaseName}') IS NULL
                     BEGIN
-                        CREATE DATABASE [{DatabaseName}];
+                        CREATE DATABASE [{DatabaseName}]
+                        ON PRIMARY (NAME = N'{DatabaseName}', FILENAME = N'{dataFilePath}')
+                        LOG ON (NAME = N'{DatabaseName}_log', FILENAME = N'{logFilePath}');
                     END
                     """;
 

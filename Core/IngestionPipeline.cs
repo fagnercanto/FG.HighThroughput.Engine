@@ -47,6 +47,7 @@ public sealed class IngestionPipeline
     {
         var lineNumber = 0;
         var skippedLines = 0;
+        Exception? failure = null;
 
         try
         {
@@ -90,11 +91,15 @@ public sealed class IngestionPipeline
         {
             // File-level failures (missing file, locked file, disk error) are fatal for this run.
             _logger.LogError(ex, "Failed to read ingestion file {FilePath} after {LineNumber} lines", filePath, lineNumber);
+            failure = ex;
             throw;
         }
         finally
         {
-            _channel.Writer.TryComplete();
+            // Completing with the failure (when there is one) lets the consumer's
+            // ReadAllAsync surface the real cause instead of just ending as if the file
+            // had been fully read.
+            _channel.Writer.TryComplete(failure);
         }
 
         progress?.Report(lineNumber);
@@ -117,23 +122,38 @@ public sealed class IngestionPipeline
         var table = SqlBulkCopyWriter.CreateEmptyIngestionTable();
         var totalInserted = 0L;
 
-        await foreach (var record in _channel.Reader.ReadAllAsync(cancellationToken))
+        try
         {
-            table.Rows.Add(record.Id, record.RawValue, record.IngestedAtUtc);
+            await foreach (var record in _channel.Reader.ReadAllAsync(cancellationToken))
+            {
+                table.Rows.Add(record.Id, record.RawValue, record.IngestedAtUtc);
 
-            if (table.Rows.Count >= FlushThreshold)
+                if (table.Rows.Count >= FlushThreshold)
+                {
+                    totalInserted += table.Rows.Count;
+                    await FlushAsync(table, cancellationToken);
+                    progress?.Report(totalInserted);
+                }
+            }
+
+            if (table.Rows.Count > 0)
             {
                 totalInserted += table.Rows.Count;
                 await FlushAsync(table, cancellationToken);
                 progress?.Report(totalInserted);
             }
         }
-
-        if (table.Rows.Count > 0)
+        catch (Exception ex)
         {
-            totalInserted += table.Rows.Count;
-            await FlushAsync(table, cancellationToken);
-            progress?.Report(totalInserted);
+            // If the consumer stops (e.g. a bulk-copy failure such as a duplicate-key
+            // violation), nothing else was telling the channel writer to stop accepting
+            // items. That left the producer's WriteAsync suspended forever waiting for
+            // buffer space that would never be freed again - a silent deadlock that looked
+            // like the ingestion was just "stuck". Completing the writer with the exception
+            // here makes any pending/future WriteAsync throw immediately instead of hanging,
+            // so the producer task also faults and Task.WhenAll returns.
+            _channel.Writer.TryComplete(ex);
+            throw;
         }
     }
 
